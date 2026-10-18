@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* No webfont fetch: a pitch laptop on conference wifi should not wait for
+     Google Fonts to decide whether today is a good day. */
+  --font-mono: ui-monospace, 'JetBrains Mono', 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
+  /* The two anchors of the palette. Shared with the 3D layers through
+     lib/theme.ts so the canvas and the HUD cannot drift apart. */
+  --megneto-bg: #eaf4fd;
+  --megneto-ink: #0d2b3f;
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+    background: var(--megneto-bg);
+    color: var(--megneto-ink);
+    overscroll-behavior: none;
+  }
+
+  body {
+    font-family: var(--font-mono);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* The canvas is the app. Never let a stray drag select HUD text mid-demo. */
+  canvas {
+    display: block;
+    touch-action: none;
+  }
+
+  ::selection {
+    background: rgba(26, 143, 209, 0.22);
+    color: #0d2b3f;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(26, 143, 209, 0.3);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(26, 143, 209, 0.5);
+  }
+}
+
+@layer components {
+  /* Cesium ships its own widget chrome. Strip what we do not use and re-skin
+     the rest to match the HUD. */
+  .cesium-viewer,
+  .cesium-widget,
+  .cesium-widget canvas {
+    background: #eaf4fd !important;
+  }
+
+  .cesium-viewer-bottom,
+  .cesium-widget-credits,
+  .cesium-credit-logoContainer,
+  .cesium-credit-expand-link,
+  .cesium-performanceDisplay-defaultContainer {
+    display: none !important;
+  }
+
+  .cesium-widget-errorPanel {
+    font-family: var(--font-mono) !important;
+    background: rgba(255, 255, 255, 0.96) !important;
+    color: #d13a57 !important;
+  }
+}
+
+@layer utilities {
+  .bg-grid {
+    background-image:
+      linear-gradient(rgba(26, 143, 209, 0.08) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(26, 143, 209, 0.08) 1px, transparent 1px);
+    background-size: 36px 36px;
+  }
+}

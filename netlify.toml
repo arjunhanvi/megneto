@@ -1,0 +1,69 @@
+# ============================================================================
+# Megneto — Netlify deployment
+# ============================================================================
+# Next.js 15 App Router + CesiumJS + React Three Fiber.
+#
+# The one thing that makes this build different from a stock Next site:
+# `public/cesium` (23 MB) and `public/draco` (1.7 MB) are NOT in the repo. They
+# are mirrored out of node_modules by `scripts/copy-static-assets.mjs`, which
+# runs as an npm `postinstall` hook. Netlify's default install (`npm ci`) runs
+# postinstall, so the assets are regenerated on every build and the repo stays
+# at ~700 KB.
+#
+# If you ever set NPM_FLAGS to include `--ignore-scripts`, that hook stops
+# running, `window.CESIUM_BASE_URL` resolves to nothing, and the globe dies with
+# 404s on its Workers. Don't.
+# ============================================================================
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  # Next 15 supports 18/20/22. 22 is the current LTS on Netlify.
+  NODE_VERSION = "22"
+
+  # Cesium's prebuilt ESM bundle is ~8 MB of JavaScript in a single module, and
+  # webpack holds the whole module graph in memory while it minifies. The
+  # default heap is enough until it suddenly isn't, and the failure mode is an
+  # opaque "JavaScript heap out of memory" halfway through the build. 4 GB has
+  # headroom on Netlify's standard builder without being greedy.
+  NODE_OPTIONS = "--max-old-space-size=4096"
+
+  # Nothing here needs to phone home during a build.
+  NEXT_TELEMETRY_DISABLED = "1"
+
+# The Next.js Runtime. Recent Netlify versions auto-detect Next and install
+# this for you; declaring it explicitly costs nothing and means the build does
+# not depend on framework detection succeeding.
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# ---------------------------------------------------------------------------
+# Static asset caching
+# ---------------------------------------------------------------------------
+# Cesium's and Draco's files are NOT content-hashed — they are copied verbatim
+# out of node_modules, so a package upgrade changes a file's contents without
+# changing its name. That rules out `immutable`: a browser holding a year-old
+# Cesium Worker against a freshly upgraded engine is a genuinely horrible bug
+# to diagnose.
+#
+# One day of caching, revalidated after that, keeps repeat visits fast while
+# guaranteeing an upgrade propagates within 24 hours.
+[[headers]]
+  for = "/cesium/*"
+  [headers.values]
+    Cache-Control = "public, max-age=86400, must-revalidate"
+
+[[headers]]
+  for = "/draco/*"
+  [headers.values]
+    Cache-Control = "public, max-age=86400, must-revalidate"
+
+# The DRACO decoder is WebAssembly. Netlify serves .wasm as application/wasm by
+# default; this is here so that stays true if defaults ever change, because
+# `WebAssembly.instantiateStreaming` refuses any other content type.
+[[headers]]
+  for = "/draco/*.wasm"
+  [headers.values]
+    Content-Type = "application/wasm"
