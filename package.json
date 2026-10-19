@@ -14,7 +14,7 @@
   "dependencies": {
     "@react-three/fiber": "^9.0.4",
     "cesium": "^1.126.0",
-    "next": "15.1.6",
+    "next": "^15.3.3",
     "react": "19.0.0",
     "react-dom": "19.0.0",
     "three": "^0.174.0",
