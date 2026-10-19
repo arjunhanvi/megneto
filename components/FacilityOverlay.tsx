@@ -27,30 +27,23 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 
 import { SITES, STATUS_COLOR, floorElevation, type FloorIndex, type SiteId } from '@/lib/sites';
+import WorkerInspectionCard from '@/components/WorkerCard';
+import { anchors, clearAnchors, registerAnchor } from '@/lib/anchors';
 import {
   findEnvNode,
   findMachine,
   getSite,
   readAcoustic,
   useMegnetoStore,
+  workerSnapshot,
 } from '@/store/useMegnetoStore';
 
 /* -------------------------------------------------------------------------- */
 /* Anchor registry                                                             */
 /* -------------------------------------------------------------------------- */
 
-interface Anchor {
-  el: HTMLElement | null;
-  read: (out: THREE.Vector3) => void;
-}
-
-/** Module-level and mutable on purpose: the projector must not re-render. */
-const anchors = new Map<string, Anchor>();
-
-function registerAnchor(key: string, el: HTMLElement | null, read: (out: THREE.Vector3) => void) {
-  if (el) anchors.set(key, { el, read });
-  else anchors.delete(key);
-}
+// The registry itself lives in lib/anchors.ts, so this module and the worker
+// card do not import each other.
 
 const projVec = new THREE.Vector3();
 
@@ -89,10 +82,11 @@ export default function FacilityOverlay({ siteId }: { siteId: SiteId }) {
   const selectedMachineId = useMegnetoStore((s) => s.selectedMachineId);
   const selectedEnvNodeId = useMegnetoStore((s) => s.selectedEnvNodeId);
   const hoveredOperatorIndex = useMegnetoStore((s) => s.hoveredOperatorIndex);
+  const selectedWorkerIndex = useMegnetoStore((s) => s.selectedWorkerIndex);
 
   // Every anchor is dropped when this layer leaves, so a stale node can never
   // be projected into a canvas that no longer exists.
-  useEffect(() => () => anchors.clear(), [siteId]);
+  useEffect(() => () => clearAnchors(), [siteId]);
 
   return (
     <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden">
@@ -131,6 +125,9 @@ export default function FacilityOverlay({ siteId }: { siteId: SiteId }) {
         />
       ))}
 
+      {selectedWorkerIndex !== null && (
+        <WorkerInspectionCard key={selectedWorkerIndex} siteId={siteId} index={selectedWorkerIndex} />
+      )}
       {selectedMachineId && <MachinePanel key={selectedMachineId} siteId={siteId} machineId={selectedMachineId} />}
       {selectedEnvNodeId && <EnvPanel key={selectedEnvNodeId} siteId={siteId} nodeId={selectedEnvNodeId} />}
       {hoveredOperatorIndex !== null && <OperatorTooltip siteId={siteId} index={hoveredOperatorIndex} />}

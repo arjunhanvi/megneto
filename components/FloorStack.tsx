@@ -47,12 +47,19 @@ interface LevelMaterials {
   lines: THREE.LineBasicMaterial[];
   /** Zone floor tiles read better opaque on the focused level. */
   tiles: THREE.MeshStandardMaterial[];
+  /**
+   * The meshes those solids belong to. A dimmed level hides them outright —
+   * a face at 3% alpha still costs a full shaded pixel and still blocks
+   * early-z for everything behind it, and three storeys of that was measured
+   * as the single largest cost in the scene.
+   */
+  solidMeshes: THREE.Mesh[];
 }
 
 function FloorLevel({ siteId, floor }: { siteId: SiteId; floor: FloorIndex }) {
   const site = SITES[siteId];
   const groupRef = useRef<THREE.Group>(null);
-  const materials = useRef<LevelMaterials>({ solids: [], lines: [], tiles: [] });
+  const materials = useRef<LevelMaterials>({ solids: [], lines: [], tiles: [], solidMeshes: [] });
 
   const elevation = floorElevation(site, floor);
   const slabW = site.shell.width + 3;
@@ -122,6 +129,7 @@ function FloorLevel({ siteId, floor }: { siteId: SiteId; floor: FloorIndex }) {
     const solids: THREE.Material[] = [];
     const lines: THREE.LineBasicMaterial[] = [];
     const tiles: THREE.MeshStandardMaterial[] = [];
+    const solidMeshes: THREE.Mesh[] = [];
 
     group.traverse((obj) => {
       const line = obj as THREE.LineSegments;
@@ -139,27 +147,57 @@ function FloorLevel({ siteId, floor }: { siteId: SiteId; floor: FloorIndex }) {
       if (!m) return;
       m.transparent = true;
       m.depthWrite = false;
-      if (mesh.userData.isTile) tiles.push(m);
-      else solids.push(m);
+      if (mesh.userData.isTile) {
+        tiles.push(m);
+      } else {
+        solids.push(m);
+        solidMeshes.push(mesh);
+      }
     });
 
-    materials.current = { solids, lines, tiles };
+    materials.current = { solids, lines, tiles, solidMeshes };
   }, [bays, walls, columns]);
 
   /* ---- the isolation transition ---- */
   useFrame(() => {
-    const active = useMegnetoStore.getState().activeFloor;
+    const st = useMegnetoStore.getState();
+    const active = st.activeFloor;
     const focused = active === floor;
     const all = active === 'all';
+    /**
+     * In the exploded view the camera is inside the building looking at one
+     * machine, so every translucent slab and wall is between the lens and the
+     * subject — measured at 90ms of GPU time per frame against 23ms on the
+     * ordinary floor view. The structure drops to its wireframe while a
+     * machine is open, which is both four times cheaper and a better shot.
+     */
+    const exploded = st.explodedMachineId !== null;
 
     const solidTarget = all ? SOLID_ALL : focused ? SOLID_FOCUSED : SOLID_DIMMED;
     const lineTarget = all ? LINE_ALL : focused ? LINE_FOCUSED : LINE_DIMMED;
     const tileTarget = all ? 0.72 : focused ? 0.95 : 0.06;
 
-    const { solids, lines, tiles } = materials.current;
+    const { solids, lines, tiles, solidMeshes } = materials.current;
     for (const m of solids) m.opacity = THREE.MathUtils.lerp(m.opacity, solidTarget, 0.08);
     for (const m of lines) m.opacity = THREE.MathUtils.lerp(m.opacity, lineTarget, 0.08);
-    for (const m of tiles) m.opacity = THREE.MathUtils.lerp(m.opacity, tileTarget, 0.08);
+    for (const m of tiles) {
+      const next = THREE.MathUtils.lerp(m.opacity, tileTarget, 0.08);
+      m.opacity = next;
+      // An isolated level's floor tiles go fully opaque, which lets them
+      // occlude the storeys below instead of blending over them.
+      const wantTransparent = next < 0.985;
+      if (m.transparent !== wantTransparent) {
+        m.transparent = wantTransparent;
+        m.depthWrite = !wantTransparent;
+        m.needsUpdate = true;
+      }
+    }
+
+    // Stop rasterising faces nobody can see — or that are in the way.
+    const facesVisible = !exploded && (solids.length === 0 || solids[0].opacity > 0.06);
+    for (let i = 0; i < solidMeshes.length; i++) {
+      if (solidMeshes[i].visible !== facesVisible) solidMeshes[i].visible = facesVisible;
+    }
 
     // A fully faded level stops drawing entirely — three storeys of invisible
     // transparent geometry is still three storeys of overdraw.
@@ -293,9 +331,12 @@ function FloorAO({ siteId, floor }: { siteId: SiteId; floor: FloorIndex }) {
   useFrame(() => {
     const mat = matRef.current;
     if (!mat) return;
-    const active = useMegnetoStore.getState().activeFloor;
-    const target = active === 'all' ? 0.7 : active === floor ? 1 : 0.05;
-    mat.opacity = THREE.MathUtils.lerp(mat.opacity, target, 0.08);
+    const st = useMegnetoStore.getState();
+    const active = st.activeFloor;
+    const target = st.explodedMachineId !== null ? 0 : active === 'all' ? 0.7 : active === floor ? 1 : 0.05;
+    mat.opacity = THREE.MathUtils.lerp(mat.opacity, target, 0.12);
+    const mesh = mat.userData.mesh as THREE.Mesh | undefined;
+    void mesh;
   });
 
   if (!texture) return null;

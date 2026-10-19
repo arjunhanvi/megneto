@@ -188,9 +188,28 @@ export interface SiteDef {
   };
 }
 
-/** Hard cap on rendered operators. The HUD reports thousands; the GPU draws 21. */
+/**
+ * The fully-simulated operators: route-walking, RF-tagged, with per-person
+ * telemetry behind the hover card. These are the first N instances of the mob
+ * mesh, not a separate object — see MOB_CAPACITY.
+ */
 export const RENDERED_OPERATORS = 21;
 export const MAX_RENDERED_OPERATORS = 24;
+
+/**
+ * Instance capacity of the workforce mesh.
+ *
+ * The group employs exactly 3,000 people across the two nodes (1,850 + 1,150),
+ * and the mesh is allocated for all of them so switching sites never
+ * reallocates a GPU buffer. Each site renders its OWN headcount — putting 3,000
+ * bodies inside Tiruppur alone would overstate it by 62%, which is the same
+ * lie as a representative sample, just pointing the other way.
+ *
+ * Set RENDER_FULL_MOB_PER_SITE to true if you want all 3,000 in whichever
+ * facility you are standing in regardless of its payroll.
+ */
+export const MOB_CAPACITY = 3000;
+export const RENDER_FULL_MOB_PER_SITE = false;
 
 /** World Y of a floor's slab. The single source of elevation truth. */
 export function floorElevation(site: SiteDef, floor: FloorIndex): number {

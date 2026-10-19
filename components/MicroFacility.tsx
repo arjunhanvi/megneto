@@ -46,7 +46,7 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { SITES, type SiteId } from '@/lib/sites';
 import { THEME } from '@/lib/theme';
 import { frameAdvance, getSite, type PrintingPhysics, type TextilePhysics } from '@/store/useMegnetoStore';
-import { EnvNodes, Machines, Operators, Pallets } from '@/components/IndustrialEntities';
+import { EnvNodes, Logistics, Machines, Pallets, Workforce } from '@/components/IndustrialEntities';
 import { Projector } from '@/components/FacilityOverlay';
 import FloorStack from '@/components/FloorStack';
 import CameraController from '@/components/CameraController';
@@ -406,9 +406,10 @@ export default function MicroFacility({ siteId, onReady }: MicroFacilityProps) {
         <FloorStack siteId={siteId} />
         <OptionalEnvelope siteId={siteId} />
         <Pallets siteId={siteId} />
+        <Logistics siteId={siteId} />
         <Machines siteId={siteId} />
         <EnvNodes siteId={siteId} />
-        <Operators siteId={siteId} />
+        <Workforce siteId={siteId} />
 
         <Projector />
         <FirstFrameSignal onReady={onReady} />

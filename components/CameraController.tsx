@@ -27,7 +27,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 import { SITES, floorElevation, type FloorSelection, type SiteId } from '@/lib/sites';
-import { useMegnetoStore } from '@/store/useMegnetoStore';
+import { getSite, useMegnetoStore } from '@/store/useMegnetoStore';
 
 /** Seconds a floor change takes. Long enough to read, short enough to not wait. */
 const TRANSITION_SECONDS = 1.15;
@@ -80,6 +80,48 @@ export default function CameraController({ siteId }: { siteId: SiteId }) {
     } as Record<string, Framing>;
   }, [site, span]);
 
+  /**
+   * Tight framing on one machine, for the exploded view. The camera drops to
+   * the machine's own elevation and pushes in hard — close enough that the
+   * casing lifting clear and the core sensor pulsing are the whole frame.
+   */
+  const machineFraming = useMemo(() => {
+    const dir = new THREE.Vector3(0.8, 0.62, 0.8).normalize();
+    return (machineId: string): Framing | null => {
+      const def = site.machines.find((m) => m.id === machineId);
+      if (!def) return null;
+      const y = floorElevation(site, def.floor) + def.position[1] + def.size[1] * 0.62;
+      const reach = Math.max(def.size[0], def.size[2]);
+      return {
+        target: new THREE.Vector3(def.position[0], y, def.position[2]),
+        offset: dir.clone().multiplyScalar(reach * 5.5 + 6),
+        // Frame the machine to roughly a third of the viewport height.
+        zoom: 150 / Math.max(1.4, reach),
+      };
+    };
+  }, [site]);
+
+  /**
+   * Framing for one person. Tighter than a machine and lower, because a
+   * worker is 1.2 m of subject and the interesting context is the two metres
+   * of floor around them.
+   */
+  const workerFraming = useMemo(() => {
+    const dir = new THREE.Vector3(0.75, 0.55, 0.75).normalize();
+    return (index: number): Framing | null => {
+      const s = getSite(siteId);
+      if (index < 0 || index >= s.mob.count) return null;
+      const tracked = index < s.operators.length;
+      const src = tracked ? s.positions : s.mob.positions;
+      const o = index * 3;
+      return {
+        target: new THREE.Vector3(src[o], src[o + 1] + 0.9, src[o + 2]),
+        offset: dir.clone().multiplyScalar(11),
+        zoom: 118,
+      };
+    };
+  }, [siteId]);
+
   const controls = useMemo(() => {
     const c = new OrbitControls(camera, domElement);
     c.enableDamping = true;
@@ -110,11 +152,14 @@ export default function CameraController({ siteId }: { siteId: SiteId }) {
     toZoom: 1,
   });
   const lastSelection = useRef<FloorSelection | null>(null);
+  const lastExploded = useRef<string | null>(null);
+  const lastFocusedWorker = useRef<number | null>(null);
+  /** Scratch, so following a walking worker allocates nothing per frame. */
+  const followTarget = useRef(new THREE.Vector3());
   const introDone = useRef(false);
 
   /** Point the camera at a framing, either instantly or over the transition. */
-  const flyTo = (selection: FloorSelection, instant: boolean) => {
-    const f = framings[String(selection)];
+  const flyToFraming = (f: Framing | null | undefined, instant: boolean) => {
     if (!f) return;
     const tw = tween.current;
 
@@ -139,6 +184,9 @@ export default function CameraController({ siteId }: { siteId: SiteId }) {
     tw.active = true;
     controls.enabled = false;
   };
+
+  const flyTo = (selection: FloorSelection, instant: boolean) =>
+    flyToFraming(framings[String(selection)], instant);
 
   /* ---- first frame: sit at the deep-linked framing immediately ---- */
   useEffect(() => {
@@ -167,12 +215,62 @@ export default function CameraController({ siteId }: { siteId: SiteId }) {
       }
     }
 
-    /* --- did the floor selection change? --- */
+    /* --- following a worker beats everything: they are moving --- */
+    const focusedWorker = useMegnetoStore.getState().focusedWorkerIndex;
+    if (focusedWorker !== lastFocusedWorker.current) {
+      lastFocusedWorker.current = focusedWorker;
+      introDone.current = true;
+      if (focusedWorker !== null) {
+        flyToFraming(workerFraming(focusedWorker), false);
+      } else {
+        flyTo(useMegnetoStore.getState().activeFloor, false);
+      }
+    }
+
+    if (focusedWorker !== null && !tw.active) {
+      // Once the fly-in has landed, keep the camera glued to them. The target
+      // and the position move together, so the framing holds while they walk.
+      const f = workerFraming(focusedWorker);
+      if (f) {
+        followTarget.current.copy(f.target);
+        const ease = 1 - Math.exp(-dt * 3.5);
+        controls.target.lerp(followTarget.current, ease);
+        camera.position.lerp(followTarget.current.clone().add(f.offset), ease);
+      }
+      controls.update();
+      return;
+    }
+
+    /* --- exploded view takes priority over the floor framing --- */
+    const exploded = useMegnetoStore.getState().explodedMachineId;
     const selection = useMegnetoStore.getState().activeFloor;
+
+    if (exploded !== lastExploded.current) {
+      const previous = lastExploded.current;
+      lastExploded.current = exploded;
+      introDone.current = true;
+
+      if (exploded) {
+        // Opening a machine: push in on it.
+        flyToFraming(machineFraming(exploded), false);
+        lastSelection.current = selection;
+        return;
+      }
+      if (previous) {
+        // "Back to Floor": return to whichever level we are isolating.
+        flyTo(selection, false);
+        lastSelection.current = selection;
+        return;
+      }
+    }
+
+    /* --- did the floor selection change? --- */
     if (selection !== lastSelection.current) {
       lastSelection.current = selection;
       introDone.current = true;
-      flyTo(selection, false);
+      // Changing floors while a machine is open reassembles it first; the
+      // store clears explodedMachineId, and the next tick flies us out.
+      if (!exploded) flyTo(selection, false);
     }
 
     /* --- run the transition --- */

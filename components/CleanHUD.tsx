@@ -60,6 +60,8 @@ export default function CleanHUD() {
   const paused = useMegnetoStore((s) => s.paused);
   const alertRevision = useMegnetoStore((s) => s.alertRevision);
 
+  const explodedMachineId = useMegnetoStore((s) => s.explodedMachineId);
+  const collapseMachine = useMegnetoStore((s) => s.collapseMachine);
   const beginDive = useMegnetoStore((s) => s.beginDive);
   const beginAscent = useMegnetoStore((s) => s.beginAscent);
   const setActiveFloor = useMegnetoStore((s) => s.setActiveFloor);
@@ -91,7 +93,14 @@ export default function CleanHUD() {
         if (e.key === '0') s.setActiveFloor('all');
       }
       if (e.key === 'Escape') {
-        if (s.selectedMachineId || s.selectedEnvNodeId) {
+        if (s.focusedWorkerIndex !== null) {
+          s.focusWorker(null);
+          s.selectWorker(null);
+        } else if (s.selectedWorkerIndex !== null) {
+          s.selectWorker(null);
+        } else if (s.explodedMachineId) {
+          s.collapseMachine();
+        } else if (s.selectedMachineId || s.selectedEnvNodeId) {
           s.selectMachine(null);
           s.selectEnvNode(null);
         } else if (s.phase === 'micro') s.beginAscent();
@@ -196,7 +205,15 @@ export default function CleanHUD() {
                 Enter {SITES[id].city.split(',')[0]}
               </button>
             ))}
-          {isMicro && (
+          {isMicro && explodedMachineId && (
+            <button
+              onClick={collapseMachine}
+              className="rounded-full border border-signal-cyan bg-signal-cyan px-5 py-2.5 text-[11px] font-semibold tracking-[0.18em] text-white shadow-glow transition hover:bg-[#1577b0]"
+            >
+              ← Back to Floor
+            </button>
+          )}
+          {isMicro && !explodedMachineId && (
             <>
               <button
                 onClick={beginAscent}

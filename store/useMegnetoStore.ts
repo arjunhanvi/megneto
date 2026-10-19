@@ -56,6 +56,8 @@ import { create } from 'zustand';
 import {
   FLOOR_INDICES,
   MACRO_NODES,
+  MOB_CAPACITY,
+  RENDER_FULL_MOB_PER_SITE,
   MAX_RENDERED_OPERATORS,
   OPERATOR_NAMES,
   PILLARS,
@@ -206,6 +208,67 @@ export interface OperatorRuntime {
   stationId: string;
   /** Heat-stress index, 0..1, rises with indoor WBGT. */
   strain: number;
+}
+
+/**
+ * THE WORKFORCE, AS FLAT MEMORY
+ *
+ * Three thousand people cannot be three thousand JavaScript objects that a
+ * frame loop walks. Everything the renderer needs per person lives in parallel
+ * typed arrays, indexed by instance id, so the hot loop is pure arithmetic over
+ * contiguous memory with no property lookups, no allocation and no GC pressure.
+ *
+ * The first RENDERED_OPERATORS entries are the fully-simulated route-walkers;
+ * their positions are overwritten each frame from `operators`. The rest shuffle
+ * around a home point they never leave, which is what a factory floor actually
+ * looks like from an isometric camera.
+ */
+export interface MobRuntime {
+  /** Anchor position per instance, flat xyz. Never mutated after build. */
+  home: Float32Array;
+  /** Live position per instance, flat xyz. Written every frame. */
+  positions: Float32Array;
+  /** Floor index per instance, for isolation culling. */
+  floors: Uint8Array;
+  /** Index into the site's sector list, for colour and the hover card. */
+  sectors: Uint8Array;
+  /** Shuffle phase offset, so nobody moves in lockstep. */
+  phase: Float32Array;
+  /** Shuffle angular rate, rad/s. */
+  speed: Float32Array;
+  /** Shuffle radius, metres. Most people barely move; a few wander. */
+  radius: Float32Array;
+  /** Current facing, written each frame. */
+  heading: Float32Array;
+  /** How many instances this site actually uses. */
+  count: number;
+
+  /* ---- per-person telemetry -------------------------------------------
+   * Every one of the three thousand is individually queryable. None of it is
+   * a JavaScript object: six typed arrays indexed by instance id cost about
+   * 60 KB in total and can be read in a pointer handler without allocating.
+   * ------------------------------------------------------------------- */
+
+  /** RF-gait match confidence, 0..1. */
+  gait: Float32Array;
+  /** Shift efficiency, 0..1. */
+  efficiency: Float32Array;
+  /** Units produced this shift. */
+  units: Uint16Array;
+  /** Cadence, units per hour. */
+  cadence: Float32Array;
+  /** Heart rate, bpm. */
+  heartRate: Uint8Array;
+  /** Thermal / solvent strain, 0..1. */
+  strain: Float32Array;
+  /** Index into the site's zone list — the person's station assignment. */
+  zone: Uint8Array;
+  /** Index into the site's machine list, nearest at spawn. */
+  station: Uint8Array;
+  /** Seed for the RF tag, rendered as hex on demand. */
+  rfid: Uint32Array;
+  /** Rolling cursor for the staggered telemetry refresh. */
+  refreshCursor: number;
 }
 
 export interface MachineRuntime {
@@ -383,6 +446,8 @@ export interface SiteRuntime {
   readonly def: SiteDef;
   machines: MachineRuntime[];
   operators: OperatorRuntime[];
+  /** The whole workforce as flat typed arrays. See MobRuntime. */
+  mob: MobRuntime;
   envNodes: EnvNodeRuntime[];
   physics: SitePhysics;
   weather: WeatherRuntime;
@@ -471,6 +536,165 @@ function nearestMachineId(site: SiteDef, x: number, z: number): string {
     }
   }
   return best;
+}
+
+/**
+ * Places the whole workforce, once, at startup.
+ *
+ * Every person is assigned to a sector, which fixes their floor, then dropped
+ * into one of that floor's zones by rejection sampling against the machine and
+ * apparatus footprints — so nobody spawns standing inside a dye vat. Eight
+ * attempts, then we accept whatever we have; at 1,850 placements the cost is a
+ * couple of milliseconds and it only ever runs once.
+ */
+function buildMob(def: SiteDef): MobRuntime {
+  const enrolled = def.sectors.reduce((s, sec) => s + sec.headcount, 0);
+  const count = RENDER_FULL_MOB_PER_SITE ? MOB_CAPACITY : Math.min(MOB_CAPACITY, enrolled);
+
+  const home = new Float32Array(MOB_CAPACITY * 3);
+  const positions = new Float32Array(MOB_CAPACITY * 3);
+  const floors = new Uint8Array(MOB_CAPACITY);
+  const sectors = new Uint8Array(MOB_CAPACITY);
+  const phase = new Float32Array(MOB_CAPACITY);
+  const speed = new Float32Array(MOB_CAPACITY);
+  const radius = new Float32Array(MOB_CAPACITY);
+  const heading = new Float32Array(MOB_CAPACITY);
+  const gait = new Float32Array(MOB_CAPACITY);
+  const efficiency = new Float32Array(MOB_CAPACITY);
+  const units = new Uint16Array(MOB_CAPACITY);
+  const cadence = new Float32Array(MOB_CAPACITY);
+  const heartRate = new Uint8Array(MOB_CAPACITY);
+  const strain = new Float32Array(MOB_CAPACITY);
+  const zoneIdx = new Uint8Array(MOB_CAPACITY);
+  const stationIdx = new Uint8Array(MOB_CAPACITY);
+  const rfid = new Uint32Array(MOB_CAPACITY);
+
+  /** Obstacles to avoid, as expanded 2D boxes, grouped by floor. */
+  const blockers: Record<number, { x0: number; z0: number; x1: number; z1: number }[]> = { 0: [], 1: [], 2: [] };
+  const pad = 0.9;
+  for (const m of def.machines) {
+    blockers[m.floor].push({
+      x0: m.position[0] - m.size[0] / 2 - pad,
+      z0: m.position[2] - m.size[2] / 2 - pad,
+      x1: m.position[0] + m.size[0] / 2 + pad,
+      z1: m.position[2] + m.size[2] / 2 + pad,
+    });
+  }
+  for (const n of def.envNodes) {
+    blockers[n.floor].push({
+      x0: n.position[0] - n.size[0] / 2 - pad,
+      z0: n.position[2] - n.size[2] / 2 - pad,
+      x1: n.position[0] + n.size[0] / 2 + pad,
+      z1: n.position[2] + n.size[2] / 2 + pad,
+    });
+  }
+
+  const blocked = (floor: number, x: number, z: number) => {
+    const list = blockers[floor];
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      if (x > b.x0 && x < b.x1 && z > b.z0 && z < b.z1) return true;
+    }
+    return false;
+  };
+
+  let cursor = 0;
+  const placeInto = (floor: FloorIndex, sectorIndex: number, howMany: number) => {
+    const zones = def.zones.filter((z) => z.floor === floor);
+    if (zones.length === 0) return;
+    const y = floorElevation(def, floor);
+
+    for (let n = 0; n < howMany && cursor < count; n++, cursor++) {
+      const zone = zones[n % zones.length];
+      const [minX, minZ, maxX, maxZ] = zone.bounds;
+      const margin = 1.0;
+
+      let x = 0;
+      let z = 0;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        x = minX + margin + rng() * Math.max(0.2, maxX - minX - margin * 2);
+        z = minZ + margin + rng() * Math.max(0.2, maxZ - minZ - margin * 2);
+        if (!blocked(floor, x, z)) break;
+      }
+
+      const o = cursor * 3;
+      home[o] = x;
+      home[o + 1] = y;
+      home[o + 2] = z;
+      positions[o] = x;
+      positions[o + 1] = y;
+      positions[o + 2] = z;
+      floors[cursor] = floor;
+      sectors[cursor] = sectorIndex;
+      phase[cursor] = rng() * Math.PI * 2;
+      // Most people work a station and barely move; a minority circulate.
+      const wanderer = rng() < 0.22;
+      speed[cursor] = wanderer ? 0.18 + rng() * 0.3 : 0.05 + rng() * 0.12;
+      radius[cursor] = wanderer ? 0.8 + rng() * 1.6 : 0.12 + rng() * 0.4;
+      heading[cursor] = rng() * Math.PI * 2;
+
+      // Individual telemetry. Seeded from the same deterministic RNG, so a
+      // given worker reads the same on every rehearsal.
+      gait[cursor] = 0.86 + rng() * 0.135;
+      efficiency[cursor] = 0.62 + rng() * 0.36;
+      units[cursor] = 20 + Math.floor(rng() * 160);
+      cadence[cursor] = 8 + rng() * 26;
+      heartRate[cursor] = 68 + Math.floor(rng() * 34);
+      strain[cursor] = 0.1 + rng() * 0.3;
+      zoneIdx[cursor] = def.zones.indexOf(zone);
+      rfid[cursor] = 0x1a2b0000 + cursor * 0x3f7 + Math.floor(rng() * 0xfff);
+
+      // Nearest machine on this floor becomes the station assignment.
+      let best = 0;
+      let bestD = Infinity;
+      for (let mi = 0; mi < def.machines.length; mi++) {
+        const mdef = def.machines[mi];
+        if (mdef.floor !== floor) continue;
+        const d = (mdef.position[0] - x) ** 2 + (mdef.position[2] - z) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = mi;
+        }
+      }
+      stationIdx[cursor] = best;
+    }
+  };
+
+  if (RENDER_FULL_MOB_PER_SITE) {
+    // Scale every sector up proportionally to fill the full 3,000.
+    const scale = MOB_CAPACITY / enrolled;
+    def.sectors.forEach((sec, i) => placeInto(sec.floor, i, Math.round(sec.headcount * scale)));
+  } else {
+    def.sectors.forEach((sec, i) => placeInto(sec.floor, i, sec.headcount));
+  }
+
+  // Any rounding shortfall gets topped up on the busiest floor.
+  while (cursor < count) {
+    const sec = def.sectors[0];
+    placeInto(sec.floor, 0, count - cursor);
+  }
+
+  return {
+    home,
+    positions,
+    floors,
+    sectors,
+    phase,
+    speed,
+    radius,
+    heading,
+    count,
+    gait,
+    efficiency,
+    units,
+    cadence,
+    heartRate,
+    strain,
+    zone: zoneIdx,
+    station: stationIdx,
+    rfid,
+    refreshCursor: 0,
+  };
 }
 
 function emptyPillars(): Record<Pillar, PillarMetric> {
@@ -659,6 +883,7 @@ function buildSite(def: SiteDef, seedOffset: number): SiteRuntime {
     def,
     machines,
     operators,
+    mob: buildMob(def),
     envNodes,
     physics: buildPhysics(def),
     weather: {
@@ -1393,6 +1618,55 @@ function stepOperators(site: SiteRuntime, dt: number) {
   }
 }
 
+/**
+ * Keeps three thousand people's telemetry alive without touching three
+ * thousand people per tick.
+ *
+ * A rolling window of 320 is refreshed each second, so everyone updates about
+ * every six seconds — fast enough that no two glances at the same worker show
+ * identical numbers, cheap enough to disappear into the frame budget. Whoever
+ * is currently selected is refreshed every tick regardless, because a card
+ * that is open in front of an investor has to be live.
+ */
+function stepMob(site: SiteRuntime, dt: number) {
+  const mob = site.mob;
+  if (mob.count === 0) return;
+
+  const p = site.physics;
+  const ambientStrain =
+    p.kind === 'textile'
+      ? clamp((p.wbgt - 24) / 12, 0, 1)
+      : clamp(p.vocPpm / (VOC_LIMIT_PPM * 1.4), 0, 1) * 0.7 + clamp((p.indoorTempC - 26) / 10, 0, 1) * 0.3;
+
+  const WINDOW = 320;
+  const selected = useMegnetoStore.getState().selectedWorkerIndex;
+
+  const refresh = (i: number) => {
+    // Strain follows the room; output follows efficiency and strain.
+    mob.strain[i] = clamp(lerp(mob.strain[i], ambientStrain + (rng() - 0.5) * 0.08, 0.25), 0, 1);
+    mob.efficiency[i] = clamp(mob.efficiency[i] + (rng() - 0.5) * 0.012 - mob.strain[i] * 0.002, 0.45, 0.99);
+    mob.cadence[i] = clamp(
+      lerp(mob.cadence[i], 6 + mob.efficiency[i] * 30 * (1 - mob.strain[i] * 0.45), 0.3),
+      1,
+      60,
+    );
+    mob.heartRate[i] = Math.round(clamp(72 + mob.strain[i] * 46 + (rng() - 0.5) * 6, 58, 165));
+    mob.gait[i] = clamp(mob.gait[i] + (rng() - 0.5) * 0.004, 0.84, 0.998);
+    // Output accrues at the person's own cadence.
+    const gained = (mob.cadence[i] / 3600) * dt * WINDOW;
+    if (mob.units[i] < 65000) mob.units[i] = Math.min(65000, mob.units[i] + (rng() < gained ? 1 : 0));
+  };
+
+  let c = mob.refreshCursor;
+  for (let n = 0; n < WINDOW; n++) {
+    refresh(c);
+    c = (c + 1) % mob.count;
+  }
+  mob.refreshCursor = c;
+
+  if (selected !== null && selected >= 0 && selected < mob.count) refresh(selected);
+}
+
 function stepPillars(site: SiteRuntime, dt: number) {
   const p = site.physics;
   const t = site.totals;
@@ -1542,6 +1816,7 @@ function eventTick(dt: number) {
     else stepPrinting(site, dt);
     stepMachines(site, dt);
     stepOperators(site, dt);
+    stepMob(site, dt);
     stepPillars(site, dt);
   }
   stepConvoys(world.sites[world.activeSite], dt);
@@ -1772,8 +2047,18 @@ interface MegnetoState {
   /** The site the user picked on the globe, which the dive is heading for. */
   targetSite: SiteId;
   selectedMachineId: string | null;
+  /**
+   * The machine currently in exploded view. Separate from selection because
+   * selecting opens a panel, while exploding moves the camera and takes the
+   * machine apart — two different commitments.
+   */
+  explodedMachineId: string | null;
   selectedEnvNodeId: string | null;
   hoveredOperatorIndex: number | null;
+  /** Instance id of the worker whose inspection card is open, 0..2999. */
+  selectedWorkerIndex: number | null;
+  /** Instance id the camera has been asked to fly to. */
+  focusedWorkerIndex: number | null;
   focusedPillar: Pillar | null;
   alertRevision: number;
   paused: boolean;
@@ -1786,6 +2071,10 @@ interface MegnetoState {
   beginAscent: () => void;
   completeAscent: () => void;
   setActiveFloor: (floor: FloorSelection) => void;
+  /** Take a machine apart and fly the camera into it. */
+  explodeMachine: (id: string) => void;
+  /** Reassemble and return to the floor framing. */
+  collapseMachine: () => void;
   /**
    * Boot straight into a deep link: ?site=tiruppur&floor=2 skips the globe
    * entirely, which also means the Cesium chunk is never fetched.
@@ -1794,6 +2083,10 @@ interface MegnetoState {
   selectMachine: (id: string | null) => void;
   selectEnvNode: (id: string | null) => void;
   hoverOperator: (index: number | null) => void;
+  /** Open (or close) the inspection card for one worker. */
+  selectWorker: (index: number | null) => void;
+  /** Fly the camera to a worker. Null returns to the floor framing. */
+  focusWorker: (index: number | null) => void;
   focusPillar: (p: Pillar | null) => void;
   /** Click-through from the 3D scene. Returns true when something was resolved. */
   actOnMachine: (id: string) => boolean;
@@ -1809,8 +2102,11 @@ export const useMegnetoStore = create<MegnetoState>((set, get) => ({
   activeFloor: 'all',
   targetSite: 'tiruppur',
   selectedMachineId: null,
+  explodedMachineId: null,
   selectedEnvNodeId: null,
   hoveredOperatorIndex: null,
+  selectedWorkerIndex: null,
+  focusedWorkerIndex: null,
   focusedPillar: null,
   alertRevision: 0,
   paused: false,
@@ -1839,17 +2135,46 @@ export const useMegnetoStore = create<MegnetoState>((set, get) => ({
       phase: 'ascending',
       selectedMachineId: null,
       selectedEnvNodeId: null,
+      explodedMachineId: null,
       hoveredOperatorIndex: null,
+      selectedWorkerIndex: null,
+      focusedWorkerIndex: null,
     });
   },
 
   completeAscent: () => set({ phase: 'macro' }),
 
+  explodeMachine: (id) => {
+    const st = get();
+    if (st.explodedMachineId === id) return;
+    const floor = floorOfNode(st.activeSite, id);
+    // Exploding a machine on a hidden level would fly the camera into a
+    // wireframe cage, so isolating that level is part of the same action.
+    set({
+      explodedMachineId: id,
+      selectedMachineId: id,
+      selectedEnvNodeId: null,
+      activeFloor: floor ?? st.activeFloor,
+    });
+  },
+
+  collapseMachine: () => {
+    if (get().explodedMachineId === null) return;
+    set({ explodedMachineId: null });
+  },
+
   setActiveFloor: (floor) => {
     if (get().activeFloor === floor) return;
     // Isolating a floor closes any panel anchored on another one, so the
     // camera never flies away from an open card.
-    set({ activeFloor: floor, selectedMachineId: null, selectedEnvNodeId: null });
+    set({
+      activeFloor: floor,
+      selectedMachineId: null,
+      selectedEnvNodeId: null,
+      explodedMachineId: null,
+      selectedWorkerIndex: null,
+      focusedWorkerIndex: null,
+    });
   },
 
   hydrateFromUrl: (site, floor) => {
@@ -1881,6 +2206,17 @@ export const useMegnetoStore = create<MegnetoState>((set, get) => ({
   hoverOperator: (index) => {
     if (get().hoveredOperatorIndex === index) return; // pointermove fires constantly
     set({ hoveredOperatorIndex: index });
+  },
+
+  selectWorker: (index) => {
+    if (get().selectedWorkerIndex === index) return;
+    // Opening a person closes machine panels: one subject at a time.
+    set({ selectedWorkerIndex: index, selectedMachineId: null, selectedEnvNodeId: null });
+  },
+
+  focusWorker: (index) => {
+    if (get().focusedWorkerIndex === index) return;
+    set({ focusedWorkerIndex: index, explodedMachineId: index === null ? get().explodedMachineId : null });
   },
 
   focusPillar: (p) => {
@@ -1929,6 +2265,80 @@ export const findEnvNode = (siteId: SiteId, id: string | null): EnvNodeRuntime |
 /** Open, unresolved alerts for a site, newest first. */
 export const openAlerts = (siteId?: SiteId): AlertRecord[] =>
   world.alerts.filter((a) => !a.resolved && (!siteId || a.siteId === siteId));
+
+/** One worker's full record, assembled on demand. */
+export interface WorkerSnapshot {
+  index: number;
+  /** Display id, e.g. #MG-1042. */
+  workerId: string;
+  name: string | null;
+  floor: FloorIndex;
+  zoneLabel: string;
+  stationId: string;
+  stationName: string;
+  rfid: string;
+  gait: number;
+  efficiency: number;
+  units: number;
+  cadence: number;
+  heartRate: number;
+  strain: number;
+  /** True for the 21 RF-tagged operators with a full route simulation. */
+  tracked: boolean;
+  /** Live world position. */
+  x: number;
+  y: number;
+  z: number;
+}
+
+/**
+ * Reads one worker out of the flat arrays. Allocates a single object, on
+ * demand, for the one person a human is actually looking at — which is the
+ * whole reason the other 2,999 live in typed arrays.
+ *
+ * The first RENDERED_OPERATORS indices are the fully-simulated operators, so
+ * their richer figures (route-driven output, live heart rate, real names) win
+ * over the ambient arrays.
+ */
+export function workerSnapshot(siteId: SiteId, index: number): WorkerSnapshot | null {
+  const site = world.sites[siteId];
+  const mob = site.mob;
+  if (index < 0 || index >= mob.count) return null;
+
+  const def = site.def;
+  const tracked = index < site.operators.length;
+  const op = tracked ? site.operators[index] : null;
+
+  const floor = (tracked ? op!.floor : mob.floors[index]) as FloorIndex;
+  const zone = def.zones[mob.zone[index]] ?? def.zones[0];
+  const machine = def.machines[mob.station[index]] ?? def.machines[0];
+  const stationId = tracked ? op!.stationId : machine.id;
+  const stationDef = def.machines.find((m) => m.id === stationId) ?? machine;
+
+  const o = index * 3;
+  const pos = tracked ? site.positions : mob.positions;
+
+  return {
+    index,
+    workerId: `#MG-${1000 + index}`,
+    name: op ? op.name : null,
+    floor,
+    zoneLabel: zone.label,
+    stationId,
+    stationName: stationDef.name,
+    rfid: op ? op.rfid : `RF:${mob.rfid[index].toString(16).toUpperCase().padStart(8, '0')}`,
+    gait: op ? op.gaitConfidence : mob.gait[index],
+    efficiency: op ? op.efficiency : mob.efficiency[index],
+    units: op ? op.units : mob.units[index],
+    cadence: op ? op.efficiency * 26 : mob.cadence[index],
+    heartRate: op ? op.heartRate : mob.heartRate[index],
+    strain: op ? op.strain : mob.strain[index],
+    tracked,
+    x: pos[o],
+    y: pos[o + 1],
+    z: pos[o + 2],
+  };
+}
 
 /** Which floor a node sits on, for routing alerts to the floor selector. */
 export function floorOfNode(siteId: SiteId, nodeId: string): FloorIndex | null {
