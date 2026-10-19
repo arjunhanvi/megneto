@@ -50,6 +50,9 @@ import { EnvNodes, Logistics, Machines, Pallets, Workforce } from '@/components/
 import { Projector } from '@/components/FacilityOverlay';
 import FloorStack from '@/components/FloorStack';
 import CameraController from '@/components/CameraController';
+import SiteArchitecture from '@/components/SiteArchitecture';
+import InstancedMachinery from '@/components/InstancedMachinery';
+import KinematicWorkstation from '@/components/KinematicWorkstation';
 
 const DRACO_PATH = '/draco/';
 
@@ -403,13 +406,16 @@ export default function MicroFacility({ siteId, onReady }: MicroFacilityProps) {
       <CameraController siteId={siteId} />
 
       <Suspense fallback={null}>
+        <SiteArchitecture siteId={siteId} />
         <FloorStack siteId={siteId} />
+        <InstancedMachinery siteId={siteId} />
         <OptionalEnvelope siteId={siteId} />
         <Pallets siteId={siteId} />
         <Logistics siteId={siteId} />
         <Machines siteId={siteId} />
         <EnvNodes siteId={siteId} />
         <Workforce siteId={siteId} />
+        <KinematicWorkstation siteId={siteId} />
 
         <Projector />
         <FirstFrameSignal onReady={onReady} />

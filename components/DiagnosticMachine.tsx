@@ -32,7 +32,16 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useFrame, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 
-import { SITES, STATUS_COLOR, STATUS_COLOR_HEX, floorElevation, type MachineDef, type MachineStatus, type SiteId } from '@/lib/sites';
+import {
+  KINEMATICS,
+  SITES,
+  STATUS_COLOR,
+  STATUS_COLOR_HEX,
+  floorElevation,
+  type MachineDef,
+  type MachineStatus,
+  type SiteId,
+} from '@/lib/sites';
 import { THEME } from '@/lib/theme';
 import { getSite, useMegnetoStore } from '@/store/useMegnetoStore';
 
@@ -80,6 +89,7 @@ export default function DiagnosticMachine({ siteId, def, index }: DiagnosticMach
    */
   const isOpen = useMegnetoStore((s) => s.explodedMachineId === def.id);
   const explodeMachine = useMegnetoStore((s) => s.explodeMachine);
+  const inspectKinematics = useMegnetoStore((s) => s.inspectKinematics);
   const actOnMachine = useMegnetoStore((s) => s.actOnMachine);
 
   /* ---- cached geometry ---- */
@@ -109,7 +119,13 @@ export default function DiagnosticMachine({ siteId, def, index }: DiagnosticMach
         actOnMachine(def.id);
         return;
       }
-      explodeMachine(def.id);
+      // Sewing machines and presses have dramatic, countable motion, so a
+      // click on one goes straight to the macro lens — that is the pitch.
+      // Everything else opens up instead, which is the better read for a
+      // vessel or a cabinet with nothing visibly reciprocating.
+      const motion = KINEMATICS[def.kind].kind;
+      if (motion === 'needle' || motion === 'roller') inspectKinematics(def.id);
+      else explodeMachine(def.id);
     },
     [siteId, def.id, explodeMachine, actOnMachine],
   );

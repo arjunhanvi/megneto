@@ -188,6 +188,49 @@ export interface SiteDef {
   };
 }
 
+/* ========================================================================== */
+/* KINEMATICS — the physical motion each machine kind performs                */
+/* ========================================================================== */
+
+/**
+ * How a machine physically moves, and how much of that motion makes a product.
+ *
+ * This is the core of the counting model: output is incremented by completed
+ * STROKES, never by elapsed time. A needle bar that stops moving stops
+ * producing, because the only thing that can advance the counter is the same
+ * phase accumulator that drives the animation.
+ */
+export type KinematicKind = 'needle' | 'roller' | 'rotary' | 'gantry';
+
+export interface KinematicProfile {
+  readonly kind: KinematicKind;
+  /** Strokes, revolutions or passes per second at full load. */
+  readonly hz: number;
+  /** How many of those make one completed production cycle. */
+  readonly perUnit: number;
+  /** Human label for the moving part, shown on the deep-dive overlay. */
+  readonly motion: string;
+  /** What the tracker is watching, for the AI overlay caption. */
+  readonly tracker: string;
+}
+
+export const KINEMATICS: Record<MachineKind, KinematicProfile> = {
+  stitching: { kind: 'needle', hz: 7.2, perUnit: 10, motion: 'Needle bar', tracker: 'Needle-bar oscillation' },
+  binding: { kind: 'needle', hz: 3.1, perUnit: 5, motion: 'Stitching head', tracker: 'Stitch-head reciprocation' },
+  press: { kind: 'roller', hz: 4.4, perUnit: 3, motion: 'Impression cylinder', tracker: 'Cylinder revolution' },
+  laminator: { kind: 'roller', hz: 2.4, perUnit: 6, motion: 'Nip roller', tracker: 'Nip-roller revolution' },
+  dispatch: { kind: 'roller', hz: 1.9, perUnit: 8, motion: 'Sorter belt', tracker: 'Belt index' },
+  knitting: { kind: 'rotary', hz: 1.15, perUnit: 24, motion: 'Cylinder', tracker: 'Cylinder revolution' },
+  spinning: { kind: 'rotary', hz: 2.8, perUnit: 40, motion: 'Spindle bank', tracker: 'Spindle revolution' },
+  dyeing: { kind: 'rotary', hz: 0.22, perUnit: 3, motion: 'Liquor circulation', tracker: 'Circulation cycle' },
+  cutting: { kind: 'gantry', hz: 0.85, perUnit: 6, motion: 'Cutting head', tracker: 'Gantry traverse' },
+  stenter: { kind: 'gantry', hz: 0.6, perUnit: 8, motion: 'Pin chain', tracker: 'Chain advance' },
+  prepress: { kind: 'gantry', hz: 0.5, perUnit: 2, motion: 'Plate carriage', tracker: 'Carriage pass' },
+  guillotine: { kind: 'gantry', hz: 1.35, perUnit: 2, motion: 'Blade', tracker: 'Blade descent' },
+  inspection: { kind: 'gantry', hz: 1.9, perUnit: 4, motion: 'Scan head', tracker: 'Scan pass' },
+  packing: { kind: 'gantry', hz: 1.05, perUnit: 4, motion: 'Carton erector', tracker: 'Erector stroke' },
+};
+
 /**
  * The fully-simulated operators: route-walking, RF-tagged, with per-person
  * telemetry behind the hover card. These are the first N instances of the mob

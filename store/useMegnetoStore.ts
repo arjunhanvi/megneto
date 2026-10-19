@@ -55,6 +55,7 @@
 import { create } from 'zustand';
 import {
   FLOOR_INDICES,
+  KINEMATICS,
   MACRO_NODES,
   MOB_CAPACITY,
   RENDER_FULL_MOB_PER_SITE,
@@ -283,6 +284,33 @@ export interface MachineRuntime {
   queue: number;
   uptimePct: number;
   cycleT: number;
+
+  /* ---- kinematics: the only thing that can produce a unit ----------------
+   *
+   * `kin` is the live phase of the physical motion, 0..1 per stroke. The
+   * renderer positions the needle (or rotates the cylinder) from it, and the
+   * production counter increments from it. One variable drives both, which is
+   * what makes "counted by watching the machine move" a claim about the code
+   * and not just about the animation.
+   *
+   * A jam sets `strokeHz` to zero. The phase stops advancing, so the needle
+   * stops, so the ring stops filling, so output stops. There is no timer that
+   * could keep counting behind the scenes, because there is no timer.
+   * --------------------------------------------------------------------- */
+
+  /** Phase of the current stroke, 0..1. */
+  kin: number;
+  /** Completed strokes since boot. */
+  strokes: number;
+  /** Strokes completed toward the current production cycle. */
+  strokesThisUnit: number;
+  /** Current stroke rate, Hz. Zero when jammed — and so is production. */
+  strokeHz: number;
+  /** 0..1 progress toward the next completed cycle. Drives the UI ring. */
+  unitProgress: number;
+  /** Simulation clock of the last completed cycle, so the UI can flash. */
+  lastUnitAt: number;
+
   acoustic: Float32Array;
   acousticHead: number;
   /** Seconds remaining in a self-clearing fault. 0 when healthy. */
@@ -842,6 +870,12 @@ function buildSite(def: SiteDef, seedOffset: number): SiteRuntime {
       queue: 2 + Math.floor(rng() * 9),
       uptimePct: 94 + rng() * 5.4,
       cycleT: rng() * m.cycleSeconds,
+      kin: rng(),
+      strokes: 0,
+      strokesThisUnit: Math.floor(rng() * KINEMATICS[m.kind].perUnit),
+      strokeHz: 0,
+      unitProgress: 0,
+      lastUnitAt: 0,
       acoustic,
       acousticHead: acoustic.length - 1,
       faultT: 0,
@@ -1475,6 +1509,10 @@ function stepMachines(site: SiteRuntime, dt: number) {
       m.load = lerp(m.load, 0.02, 0.3);
       m.kw = d.ratedKw * 0.06;
       m.rpm = Math.round(lerp(m.rpm, 0, 0.3));
+      // The physical motion stops. Because output is derived from motion and
+      // nothing else, output stops in the same instant — no separate "stop
+      // producing" flag exists to get out of sync with the animation.
+      m.strokeHz = 0;
       pushAcoustic(m, clamp(d.nominalDb * 0.35 + (rng() - 0.5) * 2, 10, 118));
       continue;
     }
@@ -1538,21 +1576,17 @@ function stepMachines(site: SiteRuntime, dt: number) {
     m.load = lerp(m.load, targetLoad, 1 - Math.exp(-dt / 4));
     m.kw = d.ratedKw * (0.12 + m.load * 0.88);
 
-    /* --- production --- */
-    if (m.status !== 'critical') {
-      m.cycleT += m.load * dt;
-      while (m.cycleT >= d.cycleSeconds) {
-        m.cycleT -= d.cycleSeconds;
-        m.jobsDone += 1;
-        site.totals.unitsBuilt += d.yieldPerCycle;
-        m.queue = Math.max(0, m.queue - 1);
-        if (rng() < 0.55) m.queue += 1 + Math.floor(rng() * 2);
+    /* --- stroke rate -------------------------------------------------------
+     * Production itself is NOT computed here. This only sets how fast the
+     * machine is physically moving; `stepKinematics`, which runs per frame,
+     * turns that motion into product. A machine with strokeHz 0 produces
+     * nothing, by construction rather than by a check.
+     * --------------------------------------------------------------------- */
+    m.strokeHz = m.status === 'critical' ? 0 : KINEMATICS[d.kind].hz * m.load;
 
-        // QA: defect probability rises as the environment leaves spec.
-        const defectP = 0.012 + (1 - envDerate) * 0.16 + (faulted ? 0.05 : 0);
-        if (rng() < defectP) m.rejects += 1 + Math.floor(rng() * 2);
-      }
-    }
+    // Queue flow still tracks demand, independent of whether the machine is
+    // keeping up — that gap is what makes a jam show as a backlog.
+    if (rng() < 0.55 * dt) m.queue += 1 + Math.floor(rng() * 2);
 
     /* --- thermal, acoustic, vibration --- */
     const targetTemp = d.nominalTempC * (0.45 + m.load * 0.55) + (faulted ? 9 : 0);
@@ -1822,11 +1856,90 @@ function eventTick(dt: number) {
   stepConvoys(world.sites[world.activeSite], dt);
 }
 
+/* ========================================================================== */
+/* KINEMATIC ACTION RECOGNITION                                               */
+/* ========================================================================== */
+
+/**
+ * Turns physical motion into product. This is the whole counting model.
+ *
+ * It runs PER FRAME, not on the one-second tick, because the phase it
+ * integrates is the same phase the renderer uses to position a needle bar or
+ * rotate an impression cylinder. The deep-dive view is not an animation that
+ * happens to accompany a counter; it is a readout of the variable the counter
+ * is made of.
+ *
+ * Consequences that are worth stating plainly, because they are the demo:
+ *   · A jam sets strokeHz to 0. The phase freezes, the needle stops mid-air,
+ *     the progress ring stops exactly where it was, and output stops. Not
+ *     "stops soon" — stops on that frame.
+ *   · Clearing the jam resumes from the SAME strokesThisUnit. A half-finished
+ *     garment does not restart from zero, because the strokes already
+ *     performed were really performed.
+ *   · Environmental derating lowers load, which lowers strokeHz, which slows
+ *     the animation AND the count together. You can watch the needle slow
+ *     down as the humidity leaves band.
+ */
+function stepKinematics(site: SiteRuntime, dt: number) {
+  for (const m of site.machines) {
+    const profile = KINEMATICS[m.def.kind];
+
+    // A jam must halt the motion on THIS frame, not on the next one-second
+    // tick. Reading the jam flag here rather than relying on stepMachines to
+    // have zeroed strokeHz closes a window of up to a second in which a
+    // visibly stopped machine could still have credited strokes — which would
+    // have made the whole "counted by motion" claim false by up to seven
+    // stitches every time someone jammed a machine on stage.
+    if (m.jammed || m.status === 'critical') m.strokeHz = 0;
+
+    if (m.strokeHz <= 0) {
+      // Frozen. Report progress so the ring holds its position rather than
+      // snapping back, which is what makes a jam legible.
+      m.unitProgress = (m.strokesThisUnit + m.kin) / profile.perUnit;
+      continue;
+    }
+
+    m.kin += m.strokeHz * dt;
+
+    // Guard: a tab that was backgrounded could hand us a large dt. Cap the
+    // strokes credited in one frame so a stall cannot mint product.
+    let guard = 0;
+    while (m.kin >= 1 && guard++ < 16) {
+      m.kin -= 1;
+      m.strokes += 1;
+      m.strokesThisUnit += 1;
+
+      if (m.strokesThisUnit >= profile.perUnit) {
+        m.strokesThisUnit = 0;
+        m.jobsDone += 1;
+        m.lastUnitAt = world.clock;
+
+        // THE increment. The only one in the codebase.
+        site.totals.unitsBuilt += m.def.yieldPerCycle;
+        m.queue = Math.max(0, m.queue - 1);
+
+        // QA rides on the completed cycle, so defects are per real unit.
+        const faulted = m.status === 'warning' || m.status === 'critical';
+        const stress = site.physics.kind === 'textile'
+          ? clamp(Math.abs(site.physics.rh - 62.5) / 24, 0, 1)
+          : clamp(site.physics.vocPpm / 70, 0, 1);
+        if (rng() < 0.012 + stress * 0.14 + (faulted ? 0.05 : 0)) {
+          m.rejects += 1 + Math.floor(rng() * 2);
+        }
+      }
+    }
+
+    m.unitProgress = (m.strokesThisUnit + m.kin) / profile.perUnit;
+  }
+}
+
 /** Continuous motion for the ACTIVE site only — the only one being rendered. */
 export function advance(dtRaw: number) {
   if (world.paused) return;
   const dt = clamp(dtRaw, 0, 0.1);
   world.clock += dt;
+
+  for (const id of SITE_IDS) stepKinematics(world.sites[id], dt);
 
   const site = world.sites[world.activeSite];
   const pos = site.positions;
@@ -1962,6 +2075,8 @@ export function clearJam(siteId: SiteId, machineId: string): boolean {
   m.faultCode = '';
   m.load = 0.08;
   m.cycleT = 0;
+  // strokesThisUnit is deliberately NOT reset: those strokes happened, and
+  // the part they were making is still half made.
   m.queue += Math.round(m.jamSeconds / m.def.cycleSeconds);
   m.uptimePct = clamp(m.uptimePct - m.jamSeconds / 180, 80, 99.9);
   m.jamSeconds = 0;
@@ -2059,6 +2174,8 @@ interface MegnetoState {
   selectedWorkerIndex: number | null;
   /** Instance id the camera has been asked to fly to. */
   focusedWorkerIndex: number | null;
+  /** Machine whose kinematics are under the macro lens. */
+  kinematicMachineId: string | null;
   focusedPillar: Pillar | null;
   alertRevision: number;
   paused: boolean;
@@ -2087,6 +2204,8 @@ interface MegnetoState {
   selectWorker: (index: number | null) => void;
   /** Fly the camera to a worker. Null returns to the floor framing. */
   focusWorker: (index: number | null) => void;
+  /** Enter (or leave) the macro-lens kinematic view of a machine. */
+  inspectKinematics: (id: string | null) => void;
   focusPillar: (p: Pillar | null) => void;
   /** Click-through from the 3D scene. Returns true when something was resolved. */
   actOnMachine: (id: string) => boolean;
@@ -2107,6 +2226,7 @@ export const useMegnetoStore = create<MegnetoState>((set, get) => ({
   hoveredOperatorIndex: null,
   selectedWorkerIndex: null,
   focusedWorkerIndex: null,
+  kinematicMachineId: null,
   focusedPillar: null,
   alertRevision: 0,
   paused: false,
@@ -2139,6 +2259,7 @@ export const useMegnetoStore = create<MegnetoState>((set, get) => ({
       hoveredOperatorIndex: null,
       selectedWorkerIndex: null,
       focusedWorkerIndex: null,
+      kinematicMachineId: null,
     });
   },
 
@@ -2174,6 +2295,7 @@ export const useMegnetoStore = create<MegnetoState>((set, get) => ({
       explodedMachineId: null,
       selectedWorkerIndex: null,
       focusedWorkerIndex: null,
+      kinematicMachineId: null,
     });
   },
 
@@ -2217,6 +2339,24 @@ export const useMegnetoStore = create<MegnetoState>((set, get) => ({
   focusWorker: (index) => {
     if (get().focusedWorkerIndex === index) return;
     set({ focusedWorkerIndex: index, explodedMachineId: index === null ? get().explodedMachineId : null });
+  },
+
+  inspectKinematics: (id) => {
+    const st = get();
+    if (st.kinematicMachineId === id) return;
+    if (id === null) {
+      set({ kinematicMachineId: null });
+      return;
+    }
+    const floor = floorOfNode(st.activeSite, id);
+    set({
+      kinematicMachineId: id,
+      selectedMachineId: id,
+      explodedMachineId: null,
+      selectedWorkerIndex: null,
+      focusedWorkerIndex: null,
+      activeFloor: floor ?? st.activeFloor,
+    });
   },
 
   focusPillar: (p) => {

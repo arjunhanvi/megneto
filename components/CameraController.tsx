@@ -122,6 +122,24 @@ export default function CameraController({ siteId }: { siteId: SiteId }) {
     };
   }, [siteId]);
 
+  /**
+   * The macro lens. Tight enough that a needle bar fills a third of the frame,
+   * because the whole point is to watch one part move.
+   */
+  const kinematicFraming = useMemo(() => {
+    const dir = new THREE.Vector3(0.7, 0.42, 0.9).normalize();
+    return (machineId: string): Framing | null => {
+      const def = site.machines.find((m) => m.id === machineId);
+      if (!def) return null;
+      const y = floorElevation(site, def.floor) + def.position[1] + def.size[1] * 0.78;
+      return {
+        target: new THREE.Vector3(def.position[0], y, def.position[2]),
+        offset: dir.clone().multiplyScalar(5.5),
+        zoom: 330,
+      };
+    };
+  }, [site]);
+
   const controls = useMemo(() => {
     const c = new OrbitControls(camera, domElement);
     c.enableDamping = true;
@@ -131,7 +149,10 @@ export default function CameraController({ siteId }: { siteId: SiteId }) {
     c.panSpeed = 0.7;
     c.screenSpacePanning = false;
     c.minZoom = 8;
-    c.maxZoom = 120;
+    // The macro lens needs to reach ~330 to frame a needle bar; a lower
+    // ceiling here silently clamps the deep dive and it just looks like the
+    // camera did not arrive.
+    c.maxZoom = 420;
     // Locked to a tactical arc: no flipping under the slab, no vertigo.
     c.minPolarAngle = Math.PI * 0.14;
     c.maxPolarAngle = Math.PI * 0.44;
@@ -153,6 +174,7 @@ export default function CameraController({ siteId }: { siteId: SiteId }) {
   });
   const lastSelection = useRef<FloorSelection | null>(null);
   const lastExploded = useRef<string | null>(null);
+  const lastKinematic = useRef<string | null>(null);
   const lastFocusedWorker = useRef<number | null>(null);
   /** Scratch, so following a walking worker allocates nothing per frame. */
   const followTarget = useRef(new THREE.Vector3());
@@ -239,6 +261,23 @@ export default function CameraController({ siteId }: { siteId: SiteId }) {
       }
       controls.update();
       return;
+    }
+
+    /* --- the kinematic deep dive outranks the floor and exploded views --- */
+    const kinematic = useMegnetoStore.getState().kinematicMachineId;
+    if (kinematic !== lastKinematic.current) {
+      const previous = lastKinematic.current;
+      lastKinematic.current = kinematic;
+      introDone.current = true;
+      if (kinematic) {
+        flyToFraming(kinematicFraming(kinematic), false);
+        return;
+      }
+      if (previous) {
+        flyTo(useMegnetoStore.getState().activeFloor, false);
+        lastSelection.current = useMegnetoStore.getState().activeFloor;
+        return;
+      }
     }
 
     /* --- exploded view takes priority over the floor framing --- */

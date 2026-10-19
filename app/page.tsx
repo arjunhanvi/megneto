@@ -30,6 +30,7 @@ import dynamic from 'next/dynamic';
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 
 import CleanHUD from '@/components/CleanHUD';
+import KinematicPanel from '@/components/KinematicPanel';
 import TransitionVeil from '@/components/TransitionVeil';
 import UrlStateSync from '@/components/UrlStateSync';
 import { SITES } from '@/lib/sites';
@@ -145,6 +146,7 @@ export default function MegnetoPage() {
 
       {/* ---------------- HUD ---------------- */}
       <CleanHUD />
+      {showFacility && <KinematicPanel siteId={targetSite} />}
     </main>
   );
 }
