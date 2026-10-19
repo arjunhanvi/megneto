@@ -8,7 +8,7 @@ see — and every view is a shareable URL.
 
 | | Site A | Site B |
 |---|---|---|
-| | **Swift Merchandise Textile Factory** | **Industrial Printing Hub** |
+| | **Textile Factory** | **Industrial Printing Hub** |
 | Location | Tiruppur, Tamil Nadu | Rajajinagar, Bengaluru |
 | Makes | Knitted garments | Printed impressions |
 | Ground | Spinning · dye house · ZLD | Offset presses · ink · HT intake |
