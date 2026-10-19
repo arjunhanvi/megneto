@@ -43,16 +43,24 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 
+import { FX_LEVEL, PINNED_DPR } from '@/lib/quality';
 import { SITES, type SiteId } from '@/lib/sites';
 import { THEME } from '@/lib/theme';
-import { frameAdvance, getSite, type PrintingPhysics, type TextilePhysics } from '@/store/useMegnetoStore';
+import {
+  frameAdvance,
+  getSite,
+  useMegnetoStore,
+  type PrintingPhysics,
+  type TextilePhysics,
+} from '@/store/useMegnetoStore';
 import { EnvNodes, Logistics, Machines, Pallets, Workforce } from '@/components/IndustrialEntities';
 import { Projector } from '@/components/FacilityOverlay';
 import FloorStack from '@/components/FloorStack';
 import CameraController from '@/components/CameraController';
-import SiteArchitecture from '@/components/SiteArchitecture';
+import ArchitectureShell from '@/components/ArchitectureShell';
 import InstancedMachinery from '@/components/InstancedMachinery';
-import KinematicWorkstation from '@/components/KinematicWorkstation';
+import DeepDiveXRay from '@/components/DeepDiveXRay';
+import LightingAndEffects, { XrayGrading } from '@/components/LightingAndEffects';
 
 const DRACO_PATH = '/draco/';
 
@@ -78,9 +86,19 @@ function SimulationDriver() {
  */
 function DprGovernor({ initial = 1.2 }: { initial?: number }) {
   const gl = useThree((s) => s.gl);
-  const state = useRef({ dpr: initial, acc: 0, frames: 0, settle: 2 });
+  const start = PINNED_DPR ?? initial;
+  const state = useRef({ dpr: start, acc: 0, frames: 0, settle: 2 });
+
+  /* `?dpr=` pins the resolution. Without a pin, two benchmark runs measure
+   * two different resolutions, because the governor is still hunting while
+   * you time it — which is how the first V7 measurements came out showing
+   * the composer with NEGATIVE overhead. See lib/quality.ts. */
+  useEffect(() => {
+    if (PINNED_DPR !== null) gl.setPixelRatio(PINNED_DPR);
+  }, [gl]);
 
   useFrame((_, dt) => {
+    if (PINNED_DPR !== null) return;
     const s = state.current;
     s.acc += dt;
     s.frames += 1;
@@ -94,9 +112,20 @@ function DprGovernor({ initial = 1.2 }: { initial?: number }) {
       return;
     }
 
+    /* ---- the floor drops to 0.6 once the composer is in the pipeline ----
+     *
+     * V6 bottomed out at 0.75 because the scene was the only thing paying
+     * for pixels. V7 renders into a half-float target and then runs the
+     * bloom chain over it, so every pixel is paid for several times and the
+     * governor needs more room to give away. Measured on integrated
+     * graphics, 0.6 is roughly a third less fill than 0.75.
+     *
+     * The original note still applies, and more so: a soft image beats a
+     * stuttering one, and nobody in the room is counting pixels. */
+    const floor = FX_LEVEL === 'off' ? 0.75 : 0.6;
     let next = s.dpr;
-    if (fps < 46) next = Math.max(0.75, s.dpr - 0.25);
-    else if (fps > 58) next = Math.min(1.5, s.dpr + 0.25);
+    if (fps < 46) next = Math.max(floor, s.dpr - 0.15);
+    else if (fps > 58) next = Math.min(1.5, s.dpr + 0.15);
 
     if (next !== s.dpr) {
       s.dpr = next;
@@ -110,6 +139,21 @@ function DprGovernor({ initial = 1.2 }: { initial?: number }) {
 /* -------------------------------------------------------------------------- */
 /* Readiness probe                                                             */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * Rehearsal handle. `onCreated` proved unreliable across Fast Refresh — the
+ * canvas survives a hot reload but the callback does not re-run, so the
+ * console handle silently disappears mid-session and every measurement taken
+ * after that point fails. An effect re-attaches it on every remount.
+ */
+function DevHandle() {
+  const state = useThree();
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'production') return;
+    (window as unknown as Record<string, unknown>).__megnetoR3F = state;
+  });
+  return null;
+}
 
 function FirstFrameSignal({ onReady }: { onReady: () => void }) {
   const gl = useThree((s) => s.gl);
@@ -345,18 +389,34 @@ function OptionalEnvelope({ siteId }: { siteId: SiteId }) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Lighting that is not atmosphere-driven                                      */
+/* Dive culling                                                                */
 /* -------------------------------------------------------------------------- */
 
-function KeyLighting({ siteId }: { siteId: SiteId }) {
-  const def = SITES[siteId];
-  const top = def.shell.floorHeight * 3;
-  return (
-    <>
-      <directionalLight position={[def.shell.width * 0.6, top * 4, def.shell.depth * 0.6]} intensity={1.35} color="#ffffff" />
-      <directionalLight position={[-def.shell.width * 0.7, top * 2, -def.shell.depth * 0.6]} intensity={0.42} color="#cfe6f7" />
-    </>
-  );
+/**
+ * Everything that is not the machine under inspection, switched off for the
+ * duration of the dive.
+ *
+ * This is where the X-ray gets its performance budget AND its look. The
+ * camera is zoomed to 330 inside a machine, so the 3,000-person crowd, the
+ * forklifts, the pallets and the three translucent floor plates are all still
+ * being rasterised, mostly behind the subject, filling the entire viewport.
+ * V6 measured the exploded view at 90ms for precisely this reason.
+ *
+ * One `useFrame`, one store read, one boolean per group. No re-renders — the
+ * children keep their uploaded matrices and their materials throughout, so
+ * coming back out of a dive costs nothing.
+ */
+function DiveCulling({ children }: { children: React.ReactNode }) {
+  const ref = useRef<THREE.Group>(null);
+
+  useFrame(() => {
+    const g = ref.current;
+    if (!g) return;
+    const visible = useMegnetoStore.getState().kinematicMachineId === null;
+    if (g.visible !== visible) g.visible = visible;
+  });
+
+  return <group ref={ref}>{children}</group>;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -399,23 +459,38 @@ export default function MicroFacility({ siteId, onReady }: MicroFacilityProps) {
     >
       {/* Drop resolution before frames: a soft image beats a stuttering one. */}
       <DprGovernor />
+      <DevHandle />
 
       <SimulationDriver />
       <AtmosphereDriver siteId={siteId} />
-      <KeyLighting siteId={siteId} />
       <CameraController siteId={siteId} />
+      <XrayGrading />
 
       <Suspense fallback={null}>
-        <SiteArchitecture siteId={siteId} />
-        <FloorStack siteId={siteId} />
-        <InstancedMachinery siteId={siteId} />
-        <OptionalEnvelope siteId={siteId} />
-        <Pallets siteId={siteId} />
-        <Logistics siteId={siteId} />
-        <Machines siteId={siteId} />
-        <EnvNodes siteId={siteId} />
-        <Workforce siteId={siteId} />
-        <KinematicWorkstation siteId={siteId} />
+        {/* Lights, environment map and the composer. Outside DiveCulling:
+          * the X-ray needs the environment map more than the floor does — it
+          * is what makes the chromed parts read as metal. */}
+        <LightingAndEffects siteId={siteId} />
+
+        <ArchitectureShell siteId={siteId} />
+
+        {/* The floor, and everything standing on it. All of it goes away
+          * during a dive, including the low-poly machine bodies — those ARE
+          * the low level of detail, and the mechanism below replaces the one
+          * being inspected. */}
+        <DiveCulling>
+          <FloorStack siteId={siteId} />
+          <InstancedMachinery siteId={siteId} />
+          <OptionalEnvelope siteId={siteId} />
+          <Pallets siteId={siteId} />
+          <Logistics siteId={siteId} />
+          <Machines siteId={siteId} />
+          <EnvNodes siteId={siteId} />
+          <Workforce siteId={siteId} />
+        </DiveCulling>
+
+        {/* The high-fidelity mechanism. Mounts only while a dive is open. */}
+        <DeepDiveXRay siteId={siteId} />
 
         <Projector />
         <FirstFrameSignal onReady={onReady} />

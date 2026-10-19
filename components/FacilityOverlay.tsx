@@ -88,6 +88,14 @@ export default function FacilityOverlay({ siteId }: { siteId: SiteId }) {
   // be projected into a canvas that no longer exists.
   useEffect(() => () => clearAnchors(), [siteId]);
 
+  /* During an X-ray dive the floor is not being drawn at all — every zone
+   * label, machine tag and env-node readout in here would be projecting onto
+   * geometry that `DiveCulling` has switched off, which puts a scatter of
+   * floating labels across the blueprint. Unmounting also retires the
+   * anchors, so the Projector stops doing the work. */
+  const diving = useMegnetoStore((s) => s.kinematicMachineId !== null);
+  if (diving) return null;
+
   return (
     <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden">
       {def.zones.map((zone) => (

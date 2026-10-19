@@ -1037,6 +1037,12 @@ const SELF_CLEARING_FAULTS: readonly { code: string; message: string; severity: 
 
 /** Jams do not self-clear: the floor has to be dispatched. */
 const JAM_FAULTS: Record<string, string> = {
+  baleopener: 'Tuft blockage in the take-off duct',
+  carding: 'Web break at the doffer — cylinder loaded',
+  loom: 'Weft break at the right selvedge, pick aborted',
+  flexo: 'Web wrap on the central impression drum',
+  diecut: 'Blank wedged in the stripping station',
+  pasting: 'Glue pot under temperature — spine starved',
   spinning: 'Sliver lap at drafting zone — roller wrap',
   knitting: 'Needle break detected, cylinder stopped',
   dyeing: 'Liquor circulation pump cavitating',

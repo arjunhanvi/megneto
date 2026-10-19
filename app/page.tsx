@@ -30,7 +30,6 @@ import dynamic from 'next/dynamic';
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 
 import CleanHUD from '@/components/CleanHUD';
-import KinematicPanel from '@/components/KinematicPanel';
 import TransitionVeil from '@/components/TransitionVeil';
 import UrlStateSync from '@/components/UrlStateSync';
 import { SITES } from '@/lib/sites';
@@ -49,6 +48,12 @@ const MicroFacility = dynamic(() => import('@/components/MicroFacility'), {
 /* The overlay imports `useFrame` for its projector, so it belongs in the R3F
  * chunk, not the entry bundle. */
 const FacilityOverlay = dynamic(() => import('@/components/FacilityOverlay'), { ssr: false });
+
+/* The blueprint HUD. In the R3F chunk because it shares the machine inventory
+ * with the mechanism it describes, and neither is needed on the globe. */
+const DeepDiveHUD = dynamic(() => import('@/components/DeepDiveXRay').then((m) => m.DeepDiveHUD), {
+  ssr: false,
+});
 
 function LayerSkeleton({ label }: { label: string }) {
   return (
@@ -146,7 +151,12 @@ export default function MegnetoPage() {
 
       {/* ---------------- HUD ---------------- */}
       <CleanHUD />
-      {showFacility && <KinematicPanel siteId={targetSite} />}
+
+      {/* The X-ray overlay is mounted LAST so it paints over the standard HUD:
+        * during a locked dive it owns the screen, and the floor selector
+        * underneath it must not be reachable. It renders nothing at all when
+        * no dive is open. */}
+      {showFacility && <DeepDiveHUD siteId={targetSite} />}
     </main>
   );
 }

@@ -168,7 +168,7 @@ const Surroundings = memo(function Surroundings({ siteId }: { siteId: SiteId }) 
  * makes people ask "how do they get up there", so: a dog-leg stair with real
  * treads, and a freight elevator whose car actually moves between levels.
  */
-const CirculationCore = memo(function CirculationCore({ siteId }: { siteId: SiteId }) {
+export const CirculationCore = memo(function CirculationCore({ siteId }: { siteId: SiteId }) {
   const site = SITES[siteId];
   const H = site.shell.floorHeight;
   const W = site.shell.width;
@@ -316,7 +316,7 @@ const CirculationCore = memo(function CirculationCore({ siteId }: { siteId: Site
 /* MANAGEMENT CABINS — glass boxes on the upper levels                        */
 /* ========================================================================== */
 
-const ManagementCabins = memo(function ManagementCabins({ siteId }: { siteId: SiteId }) {
+export const ManagementCabins = memo(function ManagementCabins({ siteId }: { siteId: SiteId }) {
   const site = SITES[siteId];
   const W = site.shell.width;
   const D = site.shell.depth;

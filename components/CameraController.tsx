@@ -26,7 +26,8 @@ import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
-import { SITES, floorElevation, type FloorSelection, type SiteId } from '@/lib/sites';
+import { archetypeFor, mechanismScale, trackedFocus } from '@/lib/machineInventory';
+import { KINEMATICS, SITES, floorElevation, type FloorSelection, type SiteId } from '@/lib/sites';
 import { getSite, useMegnetoStore } from '@/store/useMegnetoStore';
 
 /** Seconds a floor change takes. Long enough to read, short enough to not wait. */
@@ -123,19 +124,50 @@ export default function CameraController({ siteId }: { siteId: SiteId }) {
   }, [siteId]);
 
   /**
-   * The macro lens. Tight enough that a needle bar fills a third of the frame,
-   * because the whole point is to watch one part move.
+   * The macro lens.
+   *
+   * Framed on the TRACKED PART, not on the machine. The first version
+   * targeted `def.size[1] * 0.78` — 78% of the way up the floor-plan
+   * envelope — which for a 4.6m "stitching line" put the camera 0.94m above
+   * the bench while the needle it is supposed to be watching sits at 0.38m.
+   * The dive arrived perfectly composed on a patch of empty air above the
+   * machine, and the mechanism was below the bottom of the frame.
+   *
+   * `trackedFocus` returns the part's real height and how much room it needs,
+   * derived from the same archetype the renderer builds the mechanism from,
+   * so the two cannot disagree about where the subject is.
    */
   const kinematicFraming = useMemo(() => {
     const dir = new THREE.Vector3(0.7, 0.42, 0.9).normalize();
     return (machineId: string): Framing | null => {
       const def = site.machines.find((m) => m.id === machineId);
       if (!def) return null;
-      const y = floorElevation(site, def.floor) + def.position[1] + def.size[1] * 0.78;
+
+      const archetype = archetypeFor(def, KINEMATICS[def.kind].kind);
+      const scale = mechanismScale(archetype, def.size);
+      const focus = trackedFocus(archetype, scale);
+
+      /* The mechanism is drawn inside a group rotated by `def.rotation`, so
+       * the part's local offset has to be rotated the same way before it is
+       * added to the machine's world position — otherwise the lens lands on
+       * the correct part of a machine that has been turned 90°, which is the
+       * wrong place in the room. */
+      const c = Math.cos(def.rotation);
+      const sn = Math.sin(def.rotation);
+      const [ox, oy, oz] = focus.offset;
+      const target = new THREE.Vector3(
+        def.position[0] + ox * c + oz * sn,
+        floorElevation(site, def.floor) + def.position[1] + oy,
+        def.position[2] - ox * sn + oz * c,
+      );
+
       return {
-        target: new THREE.Vector3(def.position[0], y, def.position[2]),
+        target,
         offset: dir.clone().multiplyScalar(5.5),
-        zoom: 330,
+        // Fill roughly two thirds of the viewport height with the subject.
+        // Clamped to the controls' own ceiling, which is what silently ate
+        // the V6 macro lens when it asked for more than maxZoom.
+        zoom: THREE.MathUtils.clamp(300 / focus.radius, 60, 410),
       };
     };
   }, [site]);
@@ -223,6 +255,25 @@ export default function CameraController({ siteId }: { siteId: SiteId }) {
 
   useFrame((_, dt) => {
     const tw = tween.current;
+
+    /* ======================================================================
+     * THE CAMERA LOCK
+     * ======================================================================
+     * While the X-ray dive is open the user does not get the camera back.
+     *
+     * The dive is a demonstration with a script: watch this part move, watch
+     * the counter follow it. An investor who orbits away mid-sentence — or
+     * who nudges the wheel and zooms into the inside of a cylinder — has lost
+     * the only thing the view exists to show. So controls stay disabled for
+     * the whole dive and the DISENGAGE button is the single way out.
+     *
+     * This sits ABOVE the tween logic because the tween hands controls back
+     * when it lands (`controls.enabled = true`), and that must not happen
+     * while a dive is open. Re-asserting it here every frame is what makes
+     * the lock hold rather than flicker off the moment the fly-in completes.
+     * ==================================================================== */
+    const locked = useMegnetoStore.getState().kinematicMachineId !== null;
+    if (locked && controls.enabled) controls.enabled = false;
 
     /* --- intro: ease the zoom in on mount --- */
     if (!introDone.current && !tw.active) {
@@ -324,7 +375,8 @@ export default function CameraController({ siteId }: { siteId: SiteId }) {
 
       if (tw.t >= 1) {
         tw.active = false;
-        controls.enabled = true; // hand the camera back
+        // Hand the camera back — unless the dive still has it locked.
+        controls.enabled = !locked;
       }
     }
 

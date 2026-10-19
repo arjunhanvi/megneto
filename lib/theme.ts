@@ -8,12 +8,28 @@
  *
  * Light blue and white: white surfaces, pale-blue washes, deep blue-slate type,
  * and accents chosen to stay legible ON white rather than to glow on black.
+ *
+ * ============================================================================
+ * V7: WHY THE 3D SURFACES ARE NOW DARK AND THE HUD IS NOT
+ * ============================================================================
+ * The HUD stays light blue and white — it is a document, read at a glance,
+ * over a projector. The FLOOR does not.
+ *
+ * A screen-space ambient occlusion pass has nothing to darken on a #dcea
+ * slab, and bloom on a near-white background blooms the background. Both
+ * effects need somewhere dark to work against, which is why the hall is now
+ * deep slate with bright machines standing in it. The machine bodies, the
+ * operators and the accents did NOT change: they are the same light blue and
+ * white, now reading as lit metal in a dark building instead of white-on-
+ * white. Every value below marked `3D` lives on the canvas side only; the
+ * panel chrome comes from `tailwind.config.ts` and is untouched.
+ * ============================================================================
  */
 
 export const THEME = {
-  /** Page and canvas clear colour. */
-  background: '#eaf4fd',
-  backgroundDeep: '#dceaf6',
+  /** 3D — canvas clear colour. The hall, seen from across the floor. */
+  background: '#0b1a26',
+  backgroundDeep: '#06111a',
 
   surface: '#ffffff',
   surfaceSoft: '#f3f9fe',
@@ -26,22 +42,50 @@ export const THEME = {
   accentSoft: '#8ec3e6',
   accentWash: '#cfe6f7',
 
-  /** 3D surfaces. */
-  slab: '#dceaf6',
-  grid: '#b4d8f1',
-  gridMinor: '#d2e8f7',
-  wall: '#cfe3f2',
+  /** 3D surfaces. Dark structure, bright plant — see the note at the top. */
+  slab: '#16303f',
+  /** Floor grid. Unlit and above the slab's luminance, so bloom catches it. */
+  grid: '#3fa7dd',
+  gridMinor: '#1d4a63',
+  wall: '#102532',
   wallEdge: '#1a8fd1',
-  machineBody: '#f1f7fc',
+  /** Plant stays pale: this is painted sheet steel under high-bay lighting. */
+  machineBody: '#e6f0f8',
   machineTrim: '#7fa6c0',
-  operator: '#2f9ad4',
+  operator: '#38b6f0',
   helmet: '#ffffff',
-  pallet: '#c4dcee',
+  pallet: '#9bb8cc',
+} as const;
+
+/**
+ * 3D — the industrial envelope. Structure, glazing and the surrounding city,
+ * all of which sit BEHIND the plant and must never compete with it.
+ */
+export const SCENE = {
+  /** Fog base. Matches `background`, or the horizon tears. */
+  fogBase: '#0b1a26',
+  /** Structural concrete and steel. */
+  concrete: '#1b3344',
+  column: '#24465c',
+  beam: '#1a3546',
+  /** Perimeter walls and the window bands punched through them. */
+  cladding: '#132a38',
+  glazing: '#2b6f99',
+  /** Ghosted surrounding city: cold, translucent, clearly not the subject. */
+  cityNear: '#1e4258',
+  cityFar: '#16303f',
+  cityEdge: '#4d8fb5',
+  /** High-bay luminaires. These are what bloom picks up. */
+  highBay: '#cfeaff',
+  /** The X-ray blueprint palette. */
+  blueprint: '#45c8ff',
+  blueprintWarn: '#ff6b57',
+  xrayClear: '#04101a',
 } as const;
 
 /** Numeric forms for three.js, which prefers hex ints. */
 export const THEME_HEX = {
-  background: 0xeaf4fd,
+  background: 0x0b1a26,
   accent: 0x1a8fd1,
-  pallets: [0xc9dfef, 0xb8d6ea, 0xd6e9f7] as const,
+  pallets: [0x9bb8cc, 0x86a8bd, 0xaec8da] as const,
 } as const;

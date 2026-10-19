@@ -259,6 +259,11 @@ export default function DiagnosticMachine({ siteId, def, index }: DiagnosticMach
       }
     }
     if (groupRef.current) {
+      /* This body is the LOW level of detail. The high-fidelity swap is done
+       * one level up: `MicroFacility` culls the whole plant group during an
+       * X-ray dive and `DeepDiveXRay` mounts the full nut-and-bolt mechanism
+       * in its place, so there is deliberately no per-machine X-ray check
+       * here — one owner for that decision, not two. */
       const visible = onFloor || fade > 0.085;
       if (groupRef.current.visible !== visible) groupRef.current.visible = visible;
     }

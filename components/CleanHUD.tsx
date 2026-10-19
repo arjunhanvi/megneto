@@ -72,6 +72,18 @@ export default function CleanHUD() {
   /** Disclosure state. Everything starts closed; the demo opens what it needs. */
   const [openPanel, setOpenPanel] = useState<'none' | 'pillars' | 'alerts'>('none');
 
+  /**
+   * The X-ray dive takes the whole screen.
+   *
+   * `DeepDiveXRay`'s overlay is a full-bleed panel set that deliberately
+   * swallows every click, so leaving the floor HUD mounted underneath means
+   * the master counter and the floor selector bleed through its translucent
+   * panels — and the floor pills would silently change the camera's target
+   * while the camera is locked. One HUD at a time.
+   */
+  const kinematicMachineId = useMegnetoStore((s) => s.kinematicMachineId);
+  const diving = kinematicMachineId !== null;
+
   const isMicro = phase === 'micro';
   const isMacro = phase === 'macro';
   const site = SITES[activeSite];
@@ -122,6 +134,11 @@ export default function CleanHUD() {
     () => siteAlerts.filter((a) => a.pillar === 'environment' || a.pillar === 'utility'),
     [siteAlerts],
   );
+
+  /* The dive owns the screen. Returning null rather than hiding with CSS so
+   * the floor pills cannot be focused and triggered from the keyboard while
+   * the camera is locked. */
+  if (diving) return null;
 
   return (
     <div className="pointer-events-none absolute inset-0 z-30 select-none font-mono text-ink-800">
@@ -315,18 +332,27 @@ function MasterCounter({ siteId }: { siteId: string }) {
   }, []);
 
   return (
+    /* V7: this was the one HUD element with no panel behind it, which was
+     * fine while the canvas was near-white — `text-ink-900` read as dark
+     * type on a pale floor. The hall is now deep slate, and dark type on a
+     * dark background is invisible. The master output figure is the single
+     * most important number on screen, so it gets its own surface rather
+     * than being recoloured: white-on-dark would lose it again the moment
+     * the camera swings over a bright machine. */
     <div className="pointer-events-none absolute left-1/2 top-5 -translate-x-1/2 text-center">
-      <div className="flex items-baseline justify-center gap-2">
-        <span ref={valueRef} className="text-[38px] font-semibold leading-none tracking-tight text-ink-900">
-          0
-        </span>
-        <span ref={unitRef} className="text-[12px] text-ink-400">
-          pcs
-        </span>
+      <div className="rounded-2xl border border-white/60 bg-frost-50/90 px-6 py-2.5 shadow-hud backdrop-blur-md">
+        <div className="flex items-baseline justify-center gap-2">
+          <span ref={valueRef} className="text-[38px] font-semibold leading-none tracking-tight text-ink-900">
+            0
+          </span>
+          <span ref={unitRef} className="text-[12px] text-ink-500">
+            pcs
+          </span>
+        </div>
+        <p className="mt-1 text-[9px] tracking-[0.2em] text-ink-500">
+          OUTPUT TODAY · <span ref={rateRef}>0/hr</span>
+        </p>
       </div>
-      <p className="mt-1 text-[9px] tracking-[0.2em] text-ink-400">
-        OUTPUT TODAY · <span ref={rateRef}>0/hr</span>
-      </p>
     </div>
   );
 }

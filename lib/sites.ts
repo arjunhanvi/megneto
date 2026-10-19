@@ -38,17 +38,26 @@ export type FloorSelection = FloorIndex | 'all';
 export const FLOOR_INDICES: readonly FloorIndex[] = Object.freeze([0, 1, 2]);
 
 export type MachineKind =
+  /* ---- textile, in process order ---- */
+  | 'baleopener'
+  | 'carding'
   | 'spinning'
+  | 'loom'
   | 'knitting'
   | 'dyeing'
   | 'stenter'
   | 'cutting'
   | 'stitching'
-  | 'press'
+  /* ---- printing, in process order ---- */
   | 'prepress'
+  | 'press'
+  | 'flexo'
+  | 'diecut'
+  | 'pasting'
   | 'binding'
   | 'laminator'
   | 'guillotine'
+  /* ---- shared back end ---- */
   | 'inspection'
   | 'dispatch'
   | 'packing';
@@ -222,6 +231,14 @@ export const KINEMATICS: Record<MachineKind, KinematicProfile> = {
   dispatch: { kind: 'roller', hz: 1.9, perUnit: 8, motion: 'Sorter belt', tracker: 'Belt index' },
   knitting: { kind: 'rotary', hz: 1.15, perUnit: 24, motion: 'Cylinder', tracker: 'Cylinder revolution' },
   spinning: { kind: 'rotary', hz: 2.8, perUnit: 40, motion: 'Spindle bank', tracker: 'Spindle revolution' },
+  baleopener: { kind: 'rotary', hz: 1.45, perUnit: 18, motion: 'Plucker roller', tracker: 'Plucker revolution' },
+  carding: { kind: 'rotary', hz: 3.4, perUnit: 30, motion: 'Main cylinder', tracker: 'Cylinder revolution' },
+  flexo: { kind: 'roller', hz: 5.8, perUnit: 5, motion: 'Anilox roller', tracker: 'Anilox revolution' },
+  diecut: { kind: 'roller', hz: 1.6, perUnit: 2, motion: 'Rotary die cylinder', tracker: 'Die-cylinder revolution' },
+  pasting: { kind: 'roller', hz: 2.1, perUnit: 4, motion: 'Glue applicator roller', tracker: 'Applicator revolution' },
+  // 6.5 Hz is 390 picks/min, which is where a rapier loom actually runs; an
+  // air-jet would be double that and the needle would be a blur on screen.
+  loom: { kind: 'gantry', hz: 6.5, perUnit: 44, motion: 'Rapier carrier', tracker: 'Weft insertion' },
   dyeing: { kind: 'rotary', hz: 0.22, perUnit: 3, motion: 'Liquor circulation', tracker: 'Circulation cycle' },
   cutting: { kind: 'gantry', hz: 0.85, perUnit: 6, motion: 'Cutting head', tracker: 'Gantry traverse' },
   stenter: { kind: 'gantry', hz: 0.6, perUnit: 8, motion: 'Pin chain', tracker: 'Chain advance' },
@@ -302,6 +319,24 @@ const TPR_MACHINES: readonly MachineDef[] = Object.freeze([
     nominalTempC: 36, nominalDb: 76, nominalRpm: 4200, cycleSeconds: 52, ratedKw: 22, yieldPerCycle: 6,
   },
   {
+    /* The blow room: where a bale of raw cotton becomes a feedable lap. Sits
+     * upstream of the spinning frames in the same hall, which is how a real
+     * composite mill is laid out. */
+    id: 'BLO-01', name: 'Automatic Bale Opener', kind: 'baleopener', zone: 'spin', floor: 0,
+    position: [-6.6, 0, -8.2], size: [2.8, 2.2, 1.8], rotation: 0,
+    nominalTempC: 33, nominalDb: 79, nominalRpm: 850, cycleSeconds: 12, ratedKw: 22, yieldPerCycle: 24,
+  },
+  {
+    id: 'CRD-01', name: 'High-Production Card 1', kind: 'carding', zone: 'spin', floor: 0,
+    position: [-6.6, 0, -3.0], size: [3.2, 2.0, 1.6], rotation: 0,
+    nominalTempC: 36, nominalDb: 83, nominalRpm: 600, cycleSeconds: 9, ratedKw: 18, yieldPerCycle: 30,
+  },
+  {
+    id: 'CRD-02', name: 'High-Production Card 2', kind: 'carding', zone: 'spin', floor: 0,
+    position: [-6.6, 0, 1.6], size: [3.2, 2.0, 1.6], rotation: 0,
+    nominalTempC: 36, nominalDb: 83, nominalRpm: 600, cycleSeconds: 9, ratedKw: 18, yieldPerCycle: 30,
+  },
+  {
     id: 'DYE-01', name: 'Soft-Flow Dyeing Vessel', kind: 'dyeing', zone: 'dye', floor: 0,
     position: [-0.6, 0, -6.4], size: [2.6, 2.6, 2.6], rotation: 0,
     nominalTempC: 98, nominalDb: 68, nominalRpm: 0, cycleSeconds: 420, ratedKw: 44, yieldPerCycle: 24,
@@ -332,6 +367,18 @@ const TPR_MACHINES: readonly MachineDef[] = Object.freeze([
     id: 'KNT-03', name: 'Flat-Bed Collar Knitter', kind: 'knitting', zone: 'knit', floor: 1,
     position: [-9.6, 0, 4.4], size: [3.0, 1.5, 1.3], rotation: 0,
     nominalTempC: 34, nominalDb: 71, nominalRpm: 18, cycleSeconds: 52, ratedKw: 7, yieldPerCycle: 6,
+  },
+  {
+    /* Weaving shed, sharing the knitting floor. Placed clear of the west
+     * circulation core at x = -13.4 so the stair flights stay walkable. */
+    id: 'LOM-01', name: 'Rapier Weaving Machine', kind: 'loom', zone: 'knit', floor: 1,
+    position: [-10.0, 0, -1.6], size: [3.4, 2.0, 2.2], rotation: 0,
+    nominalTempC: 34, nominalDb: 92, nominalRpm: 390, cycleSeconds: 7, ratedKw: 11, yieldPerCycle: 44,
+  },
+  {
+    id: 'LOM-02', name: 'Air-Jet Weaving Machine', kind: 'loom', zone: 'knit', floor: 1,
+    position: [-5.8, 0, -1.6], size: [3.4, 2.0, 2.2], rotation: 0,
+    nominalTempC: 35, nominalDb: 95, nominalRpm: 720, cycleSeconds: 6, ratedKw: 15, yieldPerCycle: 44,
   },
   {
     id: 'CUT-01', name: 'CNC Fabric Cutter', kind: 'cutting', zone: 'cut', floor: 1,
@@ -528,6 +575,13 @@ const RJN_MACHINES: readonly MachineDef[] = Object.freeze([
 
   /* ---- First ---- */
   {
+    /* Narrow-web flexo, for the label and flexible-packaging work that a
+     * Rajajinagar job printer actually takes on alongside sheetfed offset. */
+    id: 'FLX-01', name: 'CI Flexographic Line', kind: 'flexo', zone: 'press', floor: 0,
+    position: [-7.6, 0, 6.6], size: [5.0, 2.2, 2.0], rotation: 0,
+    nominalTempC: 41, nominalDb: 81, nominalRpm: 400, cycleSeconds: 5, ratedKw: 62, yieldPerCycle: 55,
+  },
+  {
     id: 'CTP-01', name: 'Computer-to-Plate Setter', kind: 'prepress', zone: 'prepress', floor: 1,
     position: [-10.0, 0, -5.0], size: [2.6, 1.6, 1.8], rotation: 0,
     nominalTempC: 29, nominalDb: 52, nominalRpm: 0, cycleSeconds: 72, ratedKw: 5, yieldPerCycle: 2,
@@ -543,6 +597,11 @@ const RJN_MACHINES: readonly MachineDef[] = Object.freeze([
     nominalTempC: 86, nominalDb: 77, nominalRpm: 420, cycleSeconds: 21, ratedKw: 33, yieldPerCycle: 75,
   },
   {
+    id: 'PST-01', name: 'Case-In Pasting Machine', kind: 'pasting', zone: 'bind', floor: 1,
+    position: [0.4, 0, -0.8], size: [4.0, 1.6, 1.8], rotation: 0,
+    nominalTempC: 74, nominalDb: 72, nominalRpm: 180, cycleSeconds: 18, ratedKw: 26, yieldPerCycle: 32,
+  },
+  {
     id: 'BND-02', name: 'Saddle Stitcher', kind: 'binding', zone: 'bind', floor: 1,
     position: [0.4, 0, 3.6], size: [3.2, 1.4, 1.6], rotation: 0,
     nominalTempC: 34, nominalDb: 74, nominalRpm: 680, cycleSeconds: 14, ratedKw: 11, yieldPerCycle: 110,
@@ -551,6 +610,11 @@ const RJN_MACHINES: readonly MachineDef[] = Object.freeze([
     id: 'LAM-01', name: 'Thermal Laminator', kind: 'laminator', zone: 'finish', floor: 1,
     position: [9.0, 0, -4.6], size: [3.8, 1.5, 1.5], rotation: 0,
     nominalTempC: 118, nominalDb: 64, nominalRpm: 240, cycleSeconds: 29, ratedKw: 41, yieldPerCycle: 60,
+  },
+  {
+    id: 'DCT-01', name: 'Rotary Die-Cutter', kind: 'diecut', zone: 'finish', floor: 1,
+    position: [9.0, 0, -0.4], size: [3.4, 1.8, 1.8], rotation: 0,
+    nominalTempC: 48, nominalDb: 86, nominalRpm: 96, cycleSeconds: 22, ratedKw: 37, yieldPerCycle: 24,
   },
   {
     id: 'GUI-01', name: 'Programmatic Guillotine', kind: 'guillotine', zone: 'finish', floor: 1,
